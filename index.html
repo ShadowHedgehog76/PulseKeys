@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>PULSE//KEYS — Jeu de rythme</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='80' font-size='80'>⚡</text></svg>">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@500;700;900&family=Rajdhani:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div id="bg-fx">
+    <div class="blob blob-a"></div>
+    <div class="blob blob-b"></div>
+    <div class="grid-floor"></div>
+  </div>
+
+  <!-- transition (fondu simple) entre les écrans -->
+  <div id="transition"></div>
+
+  <!-- ÉCRAN D'ACCUEIL : choix du mode de jeu -->
+  <section id="screen-title" class="screen active">
+    <div class="title-wrap">
+      <h1 class="logo">PULSE<span class="logo-sep">//</span>KEYS</h1>
+      <p class="tagline">Jeu de rythme · 4 touches · 100% synthétisé</p>
+      <nav class="bento">
+        <button id="btn-home-solo" class="tile tile-solo">
+          <div class="tile-disc"></div>
+          <span class="tile-name">SOLO</span>
+          <span class="tile-desc">70 morceaux · 17 styles · mods &amp; effets spéciaux</span>
+          <kbd class="tile-kbd">⏎</kbd>
+        </button>
+        <button class="tile tile-versus disabled" disabled>
+          <span class="tile-vs">VS</span>
+          <span class="tile-name">VERSUS</span>
+          <span class="tile-desc">Affrontez un autre joueur</span>
+          <span class="hi-soon">bientôt</span>
+        </button>
+        <button class="tile tile-mini disabled" disabled style="--hue: 45">
+          <span class="tile-icon">🏆</span>
+          <span class="tile-name">DÉFI DU JOUR</span>
+          <span class="hi-soon">bientôt</span>
+        </button>
+        <button class="tile tile-mini disabled" disabled style="--hue: 130">
+          <span class="tile-icon">🎚️</span>
+          <span class="tile-name">ÉDITEUR</span>
+          <span class="hi-soon">bientôt</span>
+        </button>
+      </nav>
+      <p class="title-foot">D · F · J · K pour jouer &nbsp;·&nbsp; S / L pour les lanes bonus &nbsp;·&nbsp; Échap pour pause</p>
+    </div>
+  </section>
+
+  <!-- MENU / SÉLECTION (façon osu!lazer) -->
+  <section id="screen-menu" class="screen">
+    <canvas id="menu-bg"></canvas>
+    <div class="menu-dim"></div>
+    <header class="menu-head">
+      <div class="menu-left">
+        <button id="btn-back" class="btn ghost" title="Retour à l'accueil">⬅ Accueil</button>
+        <h2 class="logo logo-small">PULSE<span class="logo-sep">//</span>KEYS</h2>
+      </div>
+      <span class="menu-count">70 morceaux + tutoriel · 17 styles · ★1 à ★10</span>
+      <div class="menu-actions">
+        <button id="btn-mods" class="btn ghost">🎛 Mods</button>
+        <button id="btn-view" class="btn ghost">▦ Grille</button>
+        <button id="btn-calib" class="btn ghost">🎯 Calibration</button>
+        <button id="btn-settings" class="btn ghost">⚙ Options</button>
+      </div>
+    </header>
+    <div class="menu-tools">
+      <input id="f-search" type="search" placeholder="🔍 Rechercher un morceau…" autocomplete="off">
+      <select id="f-style" title="Style musical">
+        <option value="all">Tous les styles</option>
+      </select>
+      <select id="f-stars" title="Difficulté">
+        <option value="all">★ Toutes</option>
+        <option value="1-3">★ 1–3</option>
+        <option value="4-6">★ 4–6</option>
+        <option value="7-10">★ 7–10</option>
+      </select>
+      <select id="f-fx" title="Effets spéciaux">
+        <option value="all">Effets : indifférent</option>
+        <option value="any">Avec effets ✨</option>
+        <option value="none">Sans effets</option>
+        <option value="pick">Effets au choix…</option>
+      </select>
+    </div>
+    <div id="f-fx-panel" class="fx-panel hidden"></div>
+    <div class="menu-body">
+      <aside id="menu-info"></aside>
+      <div id="song-list" class="list-mode"></div>
+    </div>
+    <footer class="menu-foot">↑↓←→ choisir · Entrée jouer · G changer de vue · Échap accueil ·
+      clic = sélectionner, re-clic = jouer · molette pour faire défiler</footer>
+  </section>
+
+  <!-- JEU -->
+  <section id="screen-game" class="screen">
+    <canvas id="game-canvas"></canvas>
+    <div id="pause-overlay" class="overlay hidden">
+      <div class="panel">
+        <h3>PAUSE</h3>
+        <div class="overlay-btns">
+          <button id="btn-pause-resume" class="btn primary">Reprendre <kbd>Échap</kbd></button>
+          <button id="btn-pause-retry" class="btn">Recommencer <kbd>R</kbd></button>
+          <button id="btn-pause-quit" class="btn ghost">Quitter <kbd>Q</kbd></button>
+        </div>
+      </div>
+    </div>
+    <div id="fail-overlay" class="overlay hidden">
+      <div class="panel">
+        <h3 class="fail-title">ÉCHEC</h3>
+        <p class="fail-sub">Le rythme vous a échappé…</p>
+        <div class="overlay-btns">
+          <button id="btn-fail-retry" class="btn primary">Réessayer <kbd>R</kbd></button>
+          <button id="btn-fail-quit" class="btn ghost">Menu <kbd>Échap</kbd></button>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- RÉSULTATS -->
+  <section id="screen-results" class="screen">
+    <div class="results-wrap panel">
+      <p class="res-label">RÉSULTATS</p>
+      <h2 id="res-title">—</h2>
+      <div id="res-record" class="record-badge hidden">★ NOUVEAU RECORD ★</div>
+      <div class="res-main">
+        <div id="res-grade" class="grade">S</div>
+        <div class="res-stats">
+          <div class="res-row"><span>Score</span><strong id="res-score">0</strong></div>
+          <div class="res-row"><span>Précision</span><strong id="res-acc">0%</strong></div>
+          <div class="res-row"><span>Combo max</span><strong id="res-combo">0</strong></div>
+        </div>
+      </div>
+      <div class="res-judges">
+        <div class="rj rj-p"><span>Parfait</span><strong id="res-perfect">0</strong></div>
+        <div class="rj rj-g"><span>Super</span><strong id="res-great">0</strong></div>
+        <div class="rj rj-b"><span>Bien</span><strong id="res-good">0</strong></div>
+        <div class="rj rj-m"><span>Raté</span><strong id="res-miss">0</strong></div>
+        <div class="rj rj-x"><span>Bombes 💥</span><strong id="res-bomb">0</strong></div>
+      </div>
+      <div class="overlay-btns">
+        <button id="btn-res-next" class="btn primary hidden">Suivant <kbd>Entrée</kbd></button>
+        <button id="btn-res-retry" class="btn">Rejouer <kbd>R</kbd></button>
+        <button id="btn-res-menu" class="btn ghost">Menu <kbd>Échap</kbd></button>
+      </div>
+    </div>
+  </section>
+
+  <!-- CALIBRATION -->
+  <section id="screen-calib" class="screen">
+    <canvas id="calib-canvas"></canvas>
+    <div id="calib-ui">
+      <h2>Calibration automatique</h2>
+      <p class="calib-explain">Un métronome va jouer. Tapez <kbd>Espace</kbd> exactement sur chaque tic
+        (au son, pas au visuel). Les 4 premières frappes servent d'échauffement.</p>
+      <p id="calib-status">Appuyez sur <kbd>Espace</kbd> pour démarrer</p>
+      <div id="calib-dots"></div>
+      <p id="calib-last"></p>
+      <div id="calib-result" class="hidden">
+        <p>Décalage détecté : <strong id="calib-offset-val">0 ms</strong></p>
+        <div class="overlay-btns">
+          <button id="btn-calib-apply" class="btn primary">Appliquer <kbd>Entrée</kbd></button>
+          <button id="btn-calib-redo" class="btn">Recommencer <kbd>R</kbd></button>
+        </div>
+      </div>
+      <p class="calib-foot"><kbd>Échap</kbd> pour annuler</p>
+    </div>
+  </section>
+
+  <!-- OPTIONS (modal) -->
+  <div id="modal-settings" class="modal hidden">
+    <div class="panel settings-panel">
+      <h3>Options</h3>
+
+      <div class="set-row">
+        <label>Décalage audio <span id="set-offset-val" class="set-val">0 ms</span></label>
+        <input type="range" id="set-offset" min="-150" max="150" step="1">
+        <button id="btn-calib-from-settings" class="btn mini">Calibration auto 🎯</button>
+      </div>
+
+      <div class="set-row">
+        <label>Vitesse de défilement <span id="set-speed-val" class="set-val">6</span></label>
+        <input type="range" id="set-speed" min="1" max="10" step="1">
+      </div>
+
+      <div class="set-row">
+        <label>Volume musique <span id="set-music-val" class="set-val">80%</span></label>
+        <input type="range" id="set-music" min="0" max="100" step="1">
+      </div>
+
+      <div class="set-row">
+        <label>Volume effets <span id="set-sfx-val" class="set-val">70%</span></label>
+        <input type="range" id="set-sfx" min="0" max="100" step="1">
+      </div>
+
+      <div class="set-row checkbox-row">
+        <label for="set-hitsound">Son de frappe</label>
+        <input type="checkbox" id="set-hitsound">
+      </div>
+
+      <div class="set-row">
+        <label>Touches</label>
+        <div class="key-binds">
+          <button class="btn keybtn xkey" id="key-x0">S</button>
+          <button class="btn keybtn" id="key-0">D</button>
+          <button class="btn keybtn" id="key-1">F</button>
+          <button class="btn keybtn" id="key-2">J</button>
+          <button class="btn keybtn" id="key-3">K</button>
+          <button class="btn keybtn xkey" id="key-x1">L</button>
+        </div>
+        <p class="key-hint">Touches dorées = lanes bonus (gauche / droite)</p>
+      </div>
+
+      <div class="set-foot">
+        <button id="btn-reset-progress" class="btn danger mini">Effacer la progression</button>
+        <button id="btn-close-settings" class="btn primary">Fermer</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- MODS DE GAMEPLAY (modal) -->
+  <div id="modal-mods" class="modal hidden">
+    <div class="panel settings-panel">
+      <h3>Mods de gameplay</h3>
+      <p class="key-hint">Les mods modifient la partie et le score. L'Autopilote rend
+        la partie non classée (aucun score sauvegardé).</p>
+      <div id="mods-list"></div>
+      <p class="mods-mult-row">Multiplicateur de score : <strong id="mods-mult">×1.00</strong></p>
+      <div class="set-foot">
+        <button id="btn-mods-clear" class="btn danger mini">Tout désactiver</button>
+        <button id="btn-close-mods" class="btn primary">Fermer</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="js/util.js"></script>
+  <script src="js/audio.js"></script>
+  <script src="js/songs.js"></script>
+  <script src="js/bg.js"></script>
+  <script src="js/game.js"></script>
+  <script src="js/main.js"></script>
+</body>
+</html>
