@@ -32,15 +32,25 @@
           <span class="tile-desc">70 morceaux · 17 styles · mods &amp; effets spéciaux</span>
           <kbd class="tile-kbd">⏎</kbd>
         </button>
-        <button class="tile tile-versus disabled" disabled>
-          <span class="tile-vs">VS</span>
-          <span class="tile-name">VERSUS</span>
-          <span class="tile-desc">Affrontez un autre joueur</span>
-          <span class="hi-soon">bientôt</span>
+        <button id="btn-home-rusher" class="tile tile-rusher">
+          <div class="tile-rails"><i></i><i></i><i></i><i></i></div>
+          <span class="tile-name">RUSHER</span>
+          <span class="tile-desc">Le jeu à l'horizontale · les notes foncent vers la gauche · n'importe quelle touche</span>
+          <kbd class="tile-kbd">R</kbd>
         </button>
-        <button class="tile tile-mini disabled" disabled style="--hue: 45">
-          <span class="tile-icon">🏆</span>
-          <span class="tile-name">DÉFI DU JOUR</span>
+        <button id="btn-home-infini" class="tile tile-mini" style="--hue: 285">
+          <span class="tile-icon">∞</span>
+          <span class="tile-name">INFINI</span>
+          <kbd class="tile-kbd">I</kbd>
+        </button>
+        <button id="btn-home-roguelite" class="tile tile-mini" style="--hue: 45">
+          <span class="tile-icon">🎲</span>
+          <span class="tile-name">ROGUELITE</span>
+          <kbd class="tile-kbd">A</kbd>
+        </button>
+        <button class="tile tile-mini disabled" disabled style="--hue: 320">
+          <span class="tile-icon">⚔️</span>
+          <span class="tile-name">VERSUS</span>
           <span class="hi-soon">bientôt</span>
         </button>
         <button class="tile tile-mini disabled" disabled style="--hue: 130">
@@ -49,7 +59,7 @@
           <span class="hi-soon">bientôt</span>
         </button>
       </nav>
-      <p class="title-foot">D · F · J · K pour jouer &nbsp;·&nbsp; S / L pour les lanes bonus &nbsp;·&nbsp; Échap pour pause</p>
+      <p class="title-foot"><kbd>Entrée</kbd> Solo &nbsp;·&nbsp; <kbd>R</kbd> Rusher &nbsp;·&nbsp; <kbd>I</kbd> Infini &nbsp;·&nbsp; <kbd>A</kbd> Roguelite</p>
     </div>
   </section>
 
@@ -64,8 +74,12 @@
       </div>
       <span class="menu-count">70 morceaux + tutoriel · 17 styles · ★1 à ★10</span>
       <div class="menu-actions">
+        <div id="view-tabs" class="view-tabs" role="tablist" title="Affichage (G)">
+          <button class="view-tab" data-view="list">☰ Liste</button>
+          <button class="view-tab" data-view="grid">▦ Grille</button>
+          <button class="view-tab" data-view="music">💿 Musique</button>
+        </div>
         <button id="btn-mods" class="btn ghost">🎛 Mods</button>
-        <button id="btn-view" class="btn ghost">▦ Grille</button>
         <button id="btn-calib" class="btn ghost">🎯 Calibration</button>
         <button id="btn-settings" class="btn ghost">⚙ Options</button>
       </div>
@@ -94,7 +108,7 @@
       <div id="song-list" class="list-mode"></div>
     </div>
     <footer class="menu-foot">↑↓←→ choisir · Entrée jouer · G changer de vue · Échap accueil ·
-      clic = sélectionner, re-clic = jouer · molette pour faire défiler</footer>
+      vue 💿 Musique : écoute les morceaux (Espace = lecture/pause)</footer>
   </section>
 
   <!-- JEU -->
@@ -117,6 +131,37 @@
         <div class="overlay-btns">
           <button id="btn-fail-retry" class="btn primary">Réessayer <kbd>R</kbd></button>
           <button id="btn-fail-quit" class="btn ghost">Menu <kbd>Échap</kbd></button>
+        </div>
+      </div>
+    </div>
+
+    <!-- MODE INFINI : choix roguelite entre deux segments -->
+    <div id="infini-choice" class="overlay hidden">
+      <div class="ic-wrap">
+        <p class="ic-eyebrow">SEGMENT <span id="ic-seg">1</span> SURVÉCU &nbsp;·&nbsp;
+          ❤️ <span id="ic-life">70 / 100</span> &nbsp;·&nbsp; ∞ <span id="ic-total">0</span></p>
+        <p id="ic-revive" class="ic-revive hidden">🪬 Seconde chance utilisée !</p>
+        <h2 class="ic-title">Choisis une amélioration</h2>
+        <div id="ic-cards" class="ic-cards"></div>
+        <p class="ic-hint">Clique une carte &nbsp;·&nbsp; ou touches <kbd>1</kbd> <kbd>2</kbd> <kbd>3</kbd> &nbsp;·&nbsp; <kbd>Échap</kbd> abandonner</p>
+      </div>
+    </div>
+
+    <!-- MODE INFINI : fin de run -->
+    <div id="infini-over" class="overlay hidden">
+      <div class="panel io-panel">
+        <p class="res-label" id="io-reason">RUN TERMINÉ</p>
+        <h2 id="io-title">—</h2>
+        <div id="io-record" class="record-badge hidden">★ NOUVEAU RECORD ★</div>
+        <div class="io-stats">
+          <div class="io-stat"><span>Segments</span><strong id="io-segs">0</strong></div>
+          <div class="io-stat"><span>Score total</span><strong id="io-score">0</strong></div>
+          <div class="io-stat"><span>Combo max</span><strong id="io-combo">0</strong></div>
+          <div class="io-stat"><span>Meilleur run</span><strong id="io-best">0</strong></div>
+        </div>
+        <div class="overlay-btns">
+          <button id="btn-io-again" class="btn primary">Nouveau run <kbd>R</kbd></button>
+          <button id="btn-io-home" class="btn ghost">Accueil <kbd>Échap</kbd></button>
         </div>
       </div>
     </div>
@@ -244,5 +289,6 @@
   <script src="js/bg.js"></script>
   <script src="js/game.js"></script>
   <script src="js/main.js"></script>
+  <script src="js/endless.js"></script>
 </body>
 </html>

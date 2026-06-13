@@ -70,13 +70,18 @@ const LANE_ANIM = 0.35;          // ouverture/fermeture d'une lane bonus (s)
 const ROLL_COLOR = '#ff9f43';
 
 class Game {
-  constructor(app, def) {
+  constructor(app, def, opts = {}) {
     this.app = app;
     this.def = def;
     this.engine = app.engine;
     this.canvas = document.getElementById('game-canvas');
     this.gfx = this.canvas.getContext('2d');
     this.tutorial = !!def.tutorial;
+    // mode RUSHER : même moteur (toutes les notes + tous les effets), mais
+    // le champ est pivoté à l'horizontale (les notes foncent de droite à
+    // gauche), sans lignes de lane, et N'IMPORTE QUELLE touche frappe la
+    // note la plus proche du récepteur (voir _rusherInput / render).
+    this.rusher = !!opts.rusher;
 
     let chartNotes;
     if (this.tutorial) {
@@ -90,8 +95,17 @@ class Game {
       chartNotes = chart.notes;
       this.laneWindows = chart.laneWindows;
     }
-    // mods de gameplay (jamais pendant le tutoriel)
-    this.mods = new Set(this.tutorial ? [] : (app.settings.mods || []));
+    // mode INFINI (roguelite sans fin) : la vie se reporte de segment en
+    // segment, les mods/score sont pilotés par le run (boons accumulés).
+    this.endless = !!opts.endless;
+    this.runInfo = opts.runInfo || null;       // {segment, totalScore, boons} pour le HUD
+    this.runScoreMult = opts.scoreMult || 1;   // multiplicateur de score du run
+    this.healthMax = opts.healthMax || 100;
+
+    // mods de gameplay : tutoriel/Rusher = aucun ; Infini = ceux du run ; sinon réglages
+    const modSrc = this.endless ? (opts.mods || [])
+      : (this.tutorial || this.rusher ? [] : (app.settings.mods || []));
+    this.mods = new Set(modSrc);
     this.rate = this.mods.size
       ? applyGameMods(this.mods, chartNotes, this.laneWindows, this.composed)
       : 1;
@@ -125,7 +139,7 @@ class Game {
     this.judged = 0;
     this.combo = 0;
     this.maxCombo = 0;
-    this.health = 60;
+    this.health = opts.startHealth != null ? opts.startHealth : 60;
     this.counts = { PERFECT: 0, GREAT: 0, GOOD: 0, MISS: 0, BOMB: 0 };
     this.nextIdx = 0;
     this.activeHolds = [];
@@ -199,6 +213,10 @@ class Game {
 
   onLane(lane, down) {
     this.keysDown[lane + 1] = down;
+    if (this.rusher) {
+      if (down) this._pressPulse = performance.now();
+      return this._rusherInput(lane, down); // toute touche, tous rails
+    }
     if (this.mAuto) return; // autopilote : les entrées n'affectent pas le jeu
     if (this.state !== 'play') return;
     const t = this.now();
@@ -275,6 +293,81 @@ class Game {
     if (this.app.settings.hitSound) this.engine.hitSound();
   }
 
+  // Entrée du mode RUSHER : la touche n'a aucune importance, on agit sur la
+  // note la plus proche du récepteur, tous rails confondus (le type de note
+  // est respecté : roulement = martèlement, tenue = maintien, double = 2
+  // touches, bombe = à éviter).
+  _rusherInput(lane, down) {
+    if (this.state !== 'play') return;
+    const t = this.now();
+
+    if (!down) {
+      // plus aucune touche tenue : on clôt les tenues proches de leur fin
+      if (!this.keysDown.some(Boolean)) {
+        for (const h of [...this.activeHolds]) {
+          if (h.t2 - t <= HOLD_RELEASE_GRACE) this._endHold(h, 'PERFECT', true);
+        }
+      }
+      return;
+    }
+
+    // 1) roulement actif (n'importe quel rail)
+    for (let i = this.nextIdx; i < this.notes.length; i++) {
+      const n = this.notes[i];
+      if (n.t - t > JUDGE.GOOD.win) break;
+      if (n.type !== 'roll' || n.done) continue;
+      if (t >= n.t - 0.1 && t <= n.t2 + 0.08) {
+        n.hits++;
+        n.lastHit = performance.now();
+        this.fx.push({ lane: n.lane, t0: performance.now(), judge: 'GOOD' });
+        if (this.app.settings.hitSound) this.engine.hitSound();
+        return;
+      }
+    }
+
+    // 2) note la plus proche, tous rails confondus (hors roulements)
+    let best = null, bestD = Infinity;
+    for (let i = this.nextIdx; i < this.notes.length; i++) {
+      const n = this.notes[i];
+      if (n.t - t > JUDGE.GOOD.win) break;
+      if (n.type === 'roll' || this._resolved(n)) continue;
+      const dd = Math.abs(n.t - t);
+      if (dd < bestD) { bestD = dd; best = n; }
+    }
+    if (!best || bestD > JUDGE.GOOD.win) return;
+
+    if (best.type === 'bomb') {
+      best.triggered = true;
+      this._judge('BOMB', best.lane, true);
+      return;
+    }
+
+    // note double : deux touches distinctes dans la fenêtre de synchro
+    if (best.type === 'wide') {
+      if (best.p1 > -9 && best.p1Lane !== lane && t - best.p1 <= WIDE_SYNC) {
+        best.hit = true;
+        const dd = Math.max(Math.abs(best.p1 - best.t), Math.abs(t - best.t));
+        const j = dd <= JUDGE.PERFECT.win ? 'PERFECT' : dd <= JUDGE.GREAT.win ? 'GREAT' : 'GOOD';
+        this._judge(j, best.lane, true, t - best.t, 2);
+        this.fx.push({ lane: best.lane2, t0: performance.now(), judge: j });
+        if (this.app.settings.hitSound) this.engine.hitSound();
+      } else {
+        best.p1 = t;
+        best.p1Lane = lane;
+      }
+      return;
+    }
+
+    best.hit = true;
+    const j = bestD <= JUDGE.PERFECT.win ? 'PERFECT' : bestD <= JUDGE.GREAT.win ? 'GREAT' : 'GOOD';
+    this._judge(j, best.lane, true, t - best.t);
+    if (best.type === 'hold' || best.type === 'shold') {
+      best.holding = true;
+      this.activeHolds.push(best);
+    }
+    if (this.app.settings.hitSound) this.engine.hitSound();
+  }
+
   _endHold(h, judge, fxOn) {
     const i = this.activeHolds.indexOf(h);
     if (i >= 0) this.activeHolds.splice(i, 1);
@@ -288,7 +381,7 @@ class Game {
   _judge(j, lane, fx, delta = 0, units = 1) {
     const info = JUDGE[j];
     this.counts[j]++;
-    this.health = Util.clamp(this.health + info.hp, 0, 100);
+    this.health = Util.clamp(this.health + info.hp, 0, this.healthMax);
     if (this.tutorial) this.health = Math.max(this.health, 30); // pas d'échec au tutoriel
     if (this.mNoFail) this.health = Math.max(this.health, 1);
     if (this.mHardcore && (j === 'MISS' || j === 'BOMB')) this.health = 0; // mort subite
@@ -306,7 +399,7 @@ class Game {
     }
     if (fx) this.fx.push({ lane, t0: performance.now(), judge: j });
     this.judgeFlash = { judge: j, t0: performance.now(), delta };
-    this.score = 1000000 * this.earned / (this.totalUnits || 1) * this.modMult;
+    this.score = 1000000 * this.earned / (this.totalUnits || 1) * this.modMult * this.runScoreMult;
     if (this.health <= 0 && this.state === 'play') this._fail();
   }
 
@@ -317,6 +410,8 @@ class Game {
     this.state = 'paused';
     clearTimeout(this.resumeTimer);
     this.engine.pause();
+    // en Infini, pas de "Recommencer" (le run est unique) : on masque le bouton
+    document.getElementById('btn-pause-retry').classList.toggle('hidden', !!this.endless);
     document.getElementById('pause-overlay').classList.remove('hidden');
   }
 
@@ -332,14 +427,17 @@ class Game {
   _fail() {
     this.state = 'failed';
     this.engine.stopSong();
+    if (this.endless) { this.app.onInfiniDeath(this); return; } // pas d'overlay : le run décide
     document.getElementById('fail-overlay').classList.remove('hidden');
   }
 
   _finish() {
     this.state = 'done';
     const acc = this.totalUnits ? (this.earned / this.totalUnits) * 100 : 0;
+    if (this.endless) { this.app.onInfiniSegmentDone(this, acc); return; } // segment réussi
     this.app.onGameEnd({
       def: this.def,
+      mode: this.rusher ? 'rusher' : undefined,
       cleared: true,
       score: Math.round(this.score),
       acc,
@@ -430,8 +528,11 @@ class Game {
         }
         const req = h.type === 'shold' && t >= h.tm ? h.lane2 : h.lane;
         const inTrans = h.type === 'shold' && Math.abs(t - h.tm) <= SHOLD_TRANS;
-        const ok = this.keysDown[req + 1] ||
-          (inTrans && (this.keysDown[h.lane + 1] || this.keysDown[h.lane2 + 1]));
+        // en Rusher la tenue reste valide tant qu'une touche (n'importe laquelle) est enfoncée
+        const ok = this.rusher
+          ? this.keysDown.some(Boolean)
+          : this.keysDown[req + 1] ||
+            (inTrans && (this.keysDown[h.lane + 1] || this.keysDown[h.lane2 + 1]));
         if (!ok) this._endHold(h, 'MISS', false);
       }
 
@@ -456,6 +557,21 @@ class Game {
     this.pfW = this.laneW * 4;
     this.pfX = (this.W - this.pfW) / 2;
     this.recY = this.H - Math.max(110, this.H * 0.16);
+    if (this.rusher) {
+      // le champ vertical est pivoté de 90° (rotation pure, sans distorsion) :
+      //   axe de chute (y, vers recY)  ->  axe horizontal (vers la gauche)
+      //   axe des lanes (x)            ->  axe vertical (rails empilés)
+      // rails recentrés verticalement, récepteur calé à gauche de l'écran.
+      this.laneW = Util.clamp(this.H * 0.105, 52, 96); // espacement des rails
+      this.pfW = this.laneW * 4;
+      this.pfX = (this.W - this.pfW) / 2;
+      this.recScreenX = Math.max(120, this.W * 0.15);
+      // la distance de chute (recY) = largeur disponible : les notes entrent
+      // par le bord droit et filent jusqu'au récepteur de gauche
+      this.recY = Math.max(this.H * 0.55, this.W - this.recScreenX - 30);
+      this._rusDX = this.recScreenX + this.recY;
+      this._rusDY = this.H / 2 - this.pfX - this.pfW / 2;
+    }
   }
 
   /* ---------- Effets spéciaux (modchart) ---------- */
@@ -675,6 +791,9 @@ class Game {
     g.fillRect(0, 0, W, H);
 
     this._computeFx(Math.max(t, 0), pulse);
+    // Rusher : on pivote tout le champ à l'horizontale (rotation pure). Les
+    // effets sont calculés en amont, dans l'espace du jeu, donc tous conservés.
+    if (this.rusher) { g.save(); g.transform(0, 1, -1, 0, this._rusDX, this._rusDY); }
     const warped = this._tilt !== 0 || this._zoom !== 1 ||
       this._camX !== 0 || this._camY !== 0 || this._camRot !== 0;
     if (warped) {
@@ -686,6 +805,7 @@ class Game {
     }
     this._renderPlayfield(g, t, hue, pulse);
     if (warped) g.restore();
+    if (this.rusher) g.restore();
     this._renderHud(g, t, hue);
     this._renderCaption(g, t);
 
@@ -705,74 +825,96 @@ class Game {
     const amtR = this._laneAmt(4, t);
     const lanes = [-1, 0, 1, 2, 3, 4];
 
-    // fonds par lane (les effets peuvent écarter les groupes), puis bordures :
-    // halo lumineux sur chaque bord exposé (extrémités et flancs des scissions)
-    const rects = [];
-    for (const l of lanes) {
-      const r = this._laneRect(l, amtL, amtR);
-      if (r.a < 0.02) continue;
-      rects.push({ l, r });
-      g.fillStyle = `rgba(8, 10, 22, ${0.78 * r.a})`;
-      g.fillRect(r.x, 0, r.w, H);
-      if (this.keysDown[l + 1]) {
-        const ry = recY + this._laneY(l);
-        const lg = g.createLinearGradient(0, ry, 0, ry - 260);
-        lg.addColorStop(0, `hsla(${hue}, 90%, 60%, ${0.28 * r.a})`);
-        lg.addColorStop(1, 'transparent');
-        g.fillStyle = lg;
-        g.fillRect(r.x, ry - 260, r.w, 260);
+    if (!this.rusher) {
+      // --- mode Solo : fonds de lane + bordures (les "lignes") + récepteurs ---
+      // halo lumineux sur chaque bord exposé (extrémités et flancs des scissions)
+      const rects = [];
+      for (const l of lanes) {
+        const r = this._laneRect(l, amtL, amtR);
+        if (r.a < 0.02) continue;
+        rects.push({ l, r });
+        g.fillStyle = `rgba(8, 10, 22, ${0.78 * r.a})`;
+        g.fillRect(r.x, 0, r.w, H);
+        if (this.keysDown[l + 1]) {
+          const ry = recY + this._laneY(l);
+          const lg = g.createLinearGradient(0, ry, 0, ry - 260);
+          lg.addColorStop(0, `hsla(${hue}, 90%, 60%, ${0.28 * r.a})`);
+          lg.addColorStop(1, 'transparent');
+          g.fillStyle = lg;
+          g.fillRect(r.x, ry - 260, r.w, 260);
+        }
       }
-    }
-    for (let i = 0; i < rects.length; i++) {
-      const { l, r } = rects[i];
-      const prev = rects[i - 1], next = rects[i + 1];
-      const openL = !prev || r.x - (prev.r.x + prev.r.w) > 2;
-      const openR = !next || next.r.x - (r.x + r.w) > 2;
-      const glow = bonus => bonus
-        ? `hsla(45, 100%, 65%, ${(0.4 + 0.3 * pulse) * r.a})`
-        : `hsla(${hue}, 90%, 65%, ${(0.35 + 0.3 * pulse) * r.a})`;
-      if (openL) {
-        g.lineWidth = 2;
-        g.strokeStyle = glow(l === -1);
-      } else {
-        g.lineWidth = 1;
-        g.strokeStyle = `rgba(150, 165, 255, ${0.10 * r.a})`;
+      for (let i = 0; i < rects.length; i++) {
+        const { l, r } = rects[i];
+        const prev = rects[i - 1], next = rects[i + 1];
+        const openL = !prev || r.x - (prev.r.x + prev.r.w) > 2;
+        const openR = !next || next.r.x - (r.x + r.w) > 2;
+        const glow = bonus => bonus
+          ? `hsla(45, 100%, 65%, ${(0.4 + 0.3 * pulse) * r.a})`
+          : `hsla(${hue}, 90%, 65%, ${(0.35 + 0.3 * pulse) * r.a})`;
+        if (openL) {
+          g.lineWidth = 2;
+          g.strokeStyle = glow(l === -1);
+        } else {
+          g.lineWidth = 1;
+          g.strokeStyle = `rgba(150, 165, 255, ${0.10 * r.a})`;
+        }
+        g.beginPath(); g.moveTo(r.x, 0); g.lineTo(r.x, H); g.stroke();
+        if (openR) {
+          g.lineWidth = 2;
+          g.strokeStyle = glow(l === 4);
+          g.beginPath(); g.moveTo(r.x + r.w, 0); g.lineTo(r.x + r.w, H); g.stroke();
+        }
       }
-      g.beginPath(); g.moveTo(r.x, 0); g.lineTo(r.x, H); g.stroke();
-      if (openR) {
-        g.lineWidth = 2;
-        g.strokeStyle = glow(l === 4);
-        g.beginPath(); g.moveTo(r.x + r.w, 0); g.lineTo(r.x + r.w, H); g.stroke();
-      }
-    }
 
-    // récepteurs
-    const keys = this.app.settings.keys;
-    const keysX = this.app.settings.keysX;
-    g.textAlign = 'center';
-    for (const l of lanes) {
-      const r = this._laneRect(l, amtL, amtR);
-      if (r.a < 0.02) continue;
-      const ry = recY + this._laneY(l);
-      const x = r.x + 5, w = Math.max(r.w - 10, 4);
-      const down = this.keysDown[l + 1];
-      const bonus = l === -1 || l === 4;
-      g.globalAlpha = r.a;
-      g.strokeStyle = down ? (bonus ? 'hsl(45, 100%, 70%)' : `hsl(${hue}, 100%, 75%)`)
-                           : bonus ? 'rgba(255, 209, 102, 0.7)' : 'rgba(220, 228, 255, 0.55)';
-      g.lineWidth = down ? 3 : 2;
-      this._rrect(g, x, ry - 13, w, 26, 8);
-      g.stroke();
-      if (down) {
-        g.fillStyle = bonus ? 'hsla(45, 100%, 70%, 0.25)' : `hsla(${hue}, 100%, 70%, 0.25)`;
+      // récepteurs (un par lane, avec l'étiquette de touche)
+      const keys = this.app.settings.keys;
+      const keysX = this.app.settings.keysX;
+      g.textAlign = 'center';
+      for (const l of lanes) {
+        const r = this._laneRect(l, amtL, amtR);
+        if (r.a < 0.02) continue;
+        const ry = recY + this._laneY(l);
+        const x = r.x + 5, w = Math.max(r.w - 10, 4);
+        const down = this.keysDown[l + 1];
+        const bonus = l === -1 || l === 4;
+        g.globalAlpha = r.a;
+        g.strokeStyle = down ? (bonus ? 'hsl(45, 100%, 70%)' : `hsl(${hue}, 100%, 75%)`)
+                             : bonus ? 'rgba(255, 209, 102, 0.7)' : 'rgba(220, 228, 255, 0.55)';
+        g.lineWidth = down ? 3 : 2;
         this._rrect(g, x, ry - 13, w, 26, 8);
-        g.fill();
+        g.stroke();
+        if (down) {
+          g.fillStyle = bonus ? 'hsla(45, 100%, 70%, 0.25)' : `hsla(${hue}, 100%, 70%, 0.25)`;
+          this._rrect(g, x, ry - 13, w, 26, 8);
+          g.fill();
+        }
+        g.fillStyle = bonus ? 'rgba(255, 209, 102, 0.6)' : 'rgba(200, 210, 255, 0.4)';
+        g.font = '600 13px Rajdhani, sans-serif';
+        const label = l === -1 ? Util.keyLabel(keysX[0]) : l === 4 ? Util.keyLabel(keysX[1]) : Util.keyLabel(keys[l]);
+        g.fillText(label, r.x + r.w / 2, ry + 38);
+        g.globalAlpha = 1;
       }
-      g.fillStyle = bonus ? 'rgba(255, 209, 102, 0.6)' : 'rgba(200, 210, 255, 0.4)';
-      g.font = '600 13px Rajdhani, sans-serif';
-      const label = l === -1 ? Util.keyLabel(keysX[0]) : l === 4 ? Util.keyLabel(keysX[1]) : Util.keyLabel(keys[l]);
-      g.fillText(label, r.x + r.w / 2, ry + 38);
-      g.globalAlpha = 1;
+    } else {
+      // --- mode Rusher : pas de lignes de rail, juste la barre de frappe ---
+      const flash = Util.clamp(1 - (performance.now() - (this._pressPulse || 0)) / 160, 0, 1);
+      const lo = this._laneRect(-1, amtL, amtR), hi = this._laneRect(4, amtL, amtR);
+      const yTop = lo.a > 0.02 ? lo.x : this._laneRect(0, amtL, amtR).x;
+      const yBot = hi.a > 0.02 ? hi.x + hi.w : this._laneRect(3, amtL, amtR).x + this._laneRect(3, amtL, amtR).w;
+      // barre blanche de frappe (devient verticale après rotation)
+      g.strokeStyle = `rgba(255, 255, 255, ${0.7 + 0.3 * flash})`;
+      g.lineWidth = 4 + 3 * flash;
+      g.beginPath(); g.moveTo(yTop - 16, recY); g.lineTo(yBot + 16, recY); g.stroke();
+      // pastilles de récepteur sur chaque rail
+      for (const l of lanes) {
+        const r = this._laneRect(l, amtL, amtR);
+        if (r.a < 0.02) continue;
+        g.globalAlpha = r.a;
+        g.strokeStyle = `rgba(255, 255, 255, ${0.5 + 0.4 * flash})`;
+        g.lineWidth = 2;
+        g.beginPath(); g.arc(r.x + r.w / 2, recY + this._laneY(l), 12, 0, 7); g.stroke();
+        g.globalAlpha = 1;
+      }
     }
 
     // notes
@@ -796,7 +938,9 @@ class Game {
       this.recY += yOff; // les aides de dessin lisent this.recY
       const y = this.recY - (n.t - tEff) * speed;
       const topY = n.t2 ? this.recY - (n.t2 - tEff) * speed : y;
-      if ((y < -80 && topY < -80) || (y > H + 80 && topY > H + 80)) {
+      // en Rusher l'axe de chute = la largeur (recY > H), on cale la borne dessus
+      const cullHi = (this.rusher ? this.recY : H) + 80;
+      if ((y < -80 && topY < -80) || (y > cullHi && topY > cullHi)) {
         this.recY = savedRecY;
         continue;
       }
@@ -889,9 +1033,10 @@ class Game {
       }
     }
 
-    // compteurs de roulement
+    // compteurs de roulement (omis en Rusher : le texte serait pivoté)
     g.font = '700 18px Orbitron, sans-serif';
     for (const n of this.notes) {
+      if (this.rusher) break;
       if (n.type !== 'roll' || n.done) continue;
       if (t < n.t - 0.6 || t > n.t2 + 0.05) continue;
       const r = this._laneRect(n.lane, amtL, amtR);
@@ -1209,11 +1354,26 @@ class Game {
     g.fillStyle = 'rgba(180, 190, 230, 0.7)';
     g.fillText(this.tutorial
       ? `TUTORIEL — étape ${Math.max(this.script.idx, 0) + 1} / ${this.script.steps.length}`
-      : `${this.def.title} — ★ ${this.def.stars}`, W / 2, 28);
-    if (this.mods.size) {
+      : this.endless && this.runInfo
+        ? `${this.runInfo.label} — Segment ${this.runInfo.segment} · ${this.def.title} ★${this.def.stars}`
+        : `${this.def.title} — ★ ${this.def.stars}`, W / 2, 28);
+    if (this.endless && this.runInfo) {
+      // score total du run (segments précédents + courant) + boons actifs
+      const icons = [...this.mods].map(id => (GAME_MODS[id] || {}).icon || '').join(' ');
+      g.font = '700 16px Rajdhani, sans-serif';
+      g.fillStyle = `hsl(${hue}, 95%, 72%)`;
+      g.fillText('TOTAL ' + Util.fmtScore(this.runInfo.totalScore + this.score)
+        + (icons ? '   ' + icons : ''), W / 2, 78);
+    }
+    if (this.mods.size && !this.endless) {
       g.font = '600 14px Rajdhani, sans-serif';
       g.fillText([...this.mods].map(id => (GAME_MODS[id] || {}).icon || '').join(' ')
         + (this.modMult !== 1 ? `  ×${this.modMult.toFixed(2)}` : ''), W / 2, 78);
+    }
+    if (this.rusher) {
+      g.font = '700 14px Rajdhani, sans-serif';
+      g.fillStyle = `hsla(${hue}, 100%, 72%, 0.9)`;
+      g.fillText('🏁 RUSHER — n\'importe quelle touche', W / 2, 78);
     }
 
     const hbW = pfW * 0.9, hbX = pfX + (pfW - hbW) / 2, hbY = 44;
@@ -1259,19 +1419,22 @@ class Game {
       if (since < 500) {
         const info = JUDGE[this.judgeFlash.judge];
         const a = since < 350 ? 1 : 1 - (since - 350) / 150;
+        // en Rusher le champ est centré : on affiche le jugement vers le bas
+        const jy = this.rusher ? H * 0.86 : this.recY - 110;
+        g.textAlign = 'center';
         g.globalAlpha = a;
         g.font = '900 30px Orbitron, sans-serif';
         g.fillStyle = info.color;
         g.shadowColor = info.color;
         g.shadowBlur = 16;
-        g.fillText(info.label, W / 2, this.recY - 110);
+        g.fillText(info.label, W / 2, jy);
         g.shadowBlur = 0;
         const jj = this.judgeFlash.judge;
         if (jj !== 'MISS' && jj !== 'PERFECT' && jj !== 'BOMB') {
           const ms = Math.round(this.judgeFlash.delta * 1000);
           g.font = '600 14px Rajdhani, sans-serif';
           g.fillStyle = 'rgba(220,228,255,0.7)';
-          g.fillText(ms > 0 ? `+${ms} ms (tard)` : `${ms} ms (tôt)`, W / 2, this.recY - 88);
+          g.fillText(ms > 0 ? `+${ms} ms (tard)` : `${ms} ms (tôt)`, W / 2, jy + 22);
         }
         g.globalAlpha = 1;
       }

@@ -13,7 +13,7 @@ const DEFAULT_SETTINGS = {
   keys: ['KeyD', 'KeyF', 'KeyJ', 'KeyK'],
   keysX: ['KeyS', 'KeyL'], // lanes bonus gauche / droite
   tutorialDone: false,
-  menuView: 'list', // list | grid
+  menuView: 'list', // list | grid | music
   mods: [], // mods de gameplay actifs (ids de GAME_MODS)
 };
 
@@ -42,6 +42,7 @@ const App = {
   settings: { ...DEFAULT_SETTINGS },
   scores: {},
   state: 'title', // title | menu | game | results | calib
+  mode: 'solo',   // mode de jeu choisi à l'accueil : solo | rusher
   game: null,
   selected: 0,
   lastResult: null,
@@ -61,7 +62,12 @@ const App = {
     document.addEventListener('keydown', e => this.onKeyDown(e));
     document.addEventListener('keyup', e => this.onKeyUp(e));
     $('btn-home-solo').addEventListener('click', () => this.launchMode('solo'));
+    $('btn-home-rusher').addEventListener('click', () => this.launchMode('rusher'));
+    $('btn-home-infini').addEventListener('click', () => this.launchMode('infini'));
+    $('btn-home-roguelite').addEventListener('click', () => this.launchMode('roguelite'));
     $('btn-back').addEventListener('click', () => this.goHome());
+    $('btn-io-again').addEventListener('click', () => { $('infini-over').classList.add('hidden'); Infini.again(); });
+    $('btn-io-home').addEventListener('click', () => { $('infini-over').classList.add('hidden'); this.goHome(); });
 
     // la musique de menu joue aussi sur l'accueil — mais le navigateur exige
     // un premier geste utilisateur avant d'autoriser l'audio
@@ -84,16 +90,22 @@ const App = {
         }
       } else if (this.state !== 'game') {
         // en jeu, on reste en pause : c'est au joueur de reprendre
-        this.engine.resume();
+        // ne pas relancer un juke-box que le joueur a volontairement mis en pause
+        if (!(this.settings.menuView === 'music' && this.jukeActive && !this.jukePlaying)) {
+          this.engine.resume();
+        }
       }
     });
 
     $('btn-settings').addEventListener('click', () => this.openSettings());
     $('btn-calib').addEventListener('click', () => this.openCalib());
-    $('btn-view').addEventListener('click', () => this.toggleView());
-    // en vue grille, la molette fait défiler horizontalement
+    // onglets d'affichage : liste / grille / musique
+    document.querySelectorAll('#view-tabs .view-tab').forEach(tab => {
+      tab.addEventListener('click', () => this.setView(tab.dataset.view));
+    });
+    // en vue grille ou musique, la molette fait défiler horizontalement
     $('song-list').addEventListener('wheel', e => {
-      if (this.settings.menuView !== 'grid') return;
+      if (this.settings.menuView === 'list') return;
       e.preventDefault();
       $('song-list').scrollLeft += e.deltaY + e.deltaX;
     }, { passive: false });
@@ -267,32 +279,57 @@ const App = {
     this.engine.ensure();
     if (this.state === 'title') this.engine.uiSound(520);
     this.state = 'menu';
+    this.applyMenuMode();
     this.buildMenu();
     this.setScreen('menu');
     this.startMenuBg();
-    this.playMenuMusic();
+    // en vue musique, c'est le juke-box qui pilote l'audio (déclenché par buildMenu)
+    if (this.settings.menuView !== 'music') this.playMenuMusic();
   },
 
   // lancement d'un mode depuis l'accueil : la tuile "pop", puis fondu simple
   launchMode(mode) {
-    if (this.transitioning || mode !== 'solo') return;
+    if (this.transitioning || !['solo', 'rusher', 'infini', 'roguelite'].includes(mode)) return;
     this.transitioning = true;
+    this.mode = mode;
     this.engine.ensure();
     this.engine.uiSound(600);
-    const tile = $('btn-home-solo');
+    const tileId = { solo: 'btn-home-solo', rusher: 'btn-home-rusher',
+      infini: 'btn-home-infini', roguelite: 'btn-home-roguelite' }[mode];
+    const tile = $(tileId);
     tile.classList.add('launching');
     const tr = $('transition');
     setTimeout(() => tr.classList.add('show'), 130); // fondu vers le noir
     setTimeout(() => {
       tile.classList.remove('launching');
-      this.enterMenu();
+      // Infini / Roguelite démarrent un run directement ; les autres passent par le menu
+      if (mode === 'infini' || mode === 'roguelite') Infini.start(mode);
+      else this.enterMenu();
       tr.classList.remove('show'); // fondu de retour à l'écran
       this.transitioning = false;
     }, 380);
   },
 
+  /* ---------- Mode Infini (délégation au contrôleur de run) ---------- */
+
+  onInfiniSegmentDone(game) { Infini.onSegmentDone(game); },
+  onInfiniDeath(game) { Infini.onDeath(game); },
+
+  // adapte l'en-tête du menu au mode courant (badge + masque les mods en Rusher)
+  applyMenuMode() {
+    const rush = this.mode === 'rusher';
+    $('btn-mods').style.display = rush ? 'none' : '';
+    const count = document.querySelector('.menu-count');
+    if (count) {
+      count.innerHTML = rush
+        ? '<b style="color:hsl(320 100% 72%)">🏁 RUSHER</b> · n\'importe quelle touche · les notes foncent vers la gauche'
+        : '70 morceaux + tutoriel · 17 styles · ★1 à ★10';
+    }
+  },
+
   // retour à l'accueil — la musique de menu continue, elle y joue aussi
   goHome() {
+    this.jukeStop(); // si on écoutait un morceau, on repasse à la boucle d'accueil
     this.state = 'title';
     this.setScreen('title');
     this.engine.uiSound(480);
@@ -303,6 +340,7 @@ const App = {
 
   playMenuMusic() {
     if (this.menuMusicActive) return;
+    this.jukeActive = false; this.jukePlaying = false; // le juke-box cède la place
     const m = Composer.menuMusic();
     this.engine.startSong(m.events, m.spb, 0.4, 'lofi', m.loopBeats);
     this.menuMusicActive = true;
@@ -316,9 +354,15 @@ const App = {
 
   /* ---------- Menu des morceaux ---------- */
 
-  // liste affichée : le tutoriel en tête, puis les 30 morceaux
+  // liste affichée : le tutoriel en tête, puis les morceaux
+  // (le tutoriel n'existe pas en mode Rusher : gameplay différent)
   menuList() {
-    return [TUTORIAL_DEF, ...SONGS];
+    return this.mode === 'rusher' ? [...SONGS] : [TUTORIAL_DEF, ...SONGS];
+  },
+
+  // clé de score : on sépare les classements Solo et Rusher
+  scoreKey(s) {
+    return (this.mode === 'rusher' ? 'rush::' : '') + s.id;
   },
 
   // tous les morceaux sont jouables d'emblée, aucune condition de déblocage
@@ -329,9 +373,12 @@ const App = {
   buildMenu() {
     this.view = this.viewList();
     this.selected = Util.clamp(this.selected, 0, Math.max(0, this.view.length - 1));
+    const mode = this.settings.menuView;
     const list = $('song-list');
-    list.className = this.settings.menuView === 'grid' ? 'grid-mode' : 'list-mode';
-    $('btn-view').textContent = this.settings.menuView === 'grid' ? '☰ Liste' : '▦ Grille';
+    list.className = mode + '-mode';
+    this.refreshViewTabs();
+    // la vue musique est un lecteur (juke-box), pas une simple liste
+    if (mode === 'music') { this.buildMusicPlayer(); return; }
     list.innerHTML = '';
     this.cards = [];
     if (!this.view.length) {
@@ -342,7 +389,7 @@ const App = {
       const card = document.createElement('div');
       card.className = 'song-card' + (unlocked ? '' : ' locked') + (s.tutorial ? ' tutorial-card' : '');
       card.style.setProperty('--hue', s.hue);
-      const best = this.scores[s.id];
+      const best = this.scores[this.scoreKey(s)];
       const grade = best ? `<span class="sc-grade">${best.grade}</span>` : '';
       const fxMark = s.fx && s.fx.length ? '<span class="sc-fx" title="Effets spéciaux">✨</span>' : '';
       const lock = unlocked ? '' : '<span class="sc-lock">🔒</span>';
@@ -370,11 +417,162 @@ const App = {
     this.updateSelection(true);
   },
 
+  // Vue musique = un vrai lecteur : on ÉCOUTE les morceaux synthétisés
+  // (platine + transport + barre de progression) au lieu de juste les choisir.
+  buildMusicPlayer() {
+    const list = $('song-list');
+    this.cards = [];
+    if (!this.view.length) {
+      list.innerHTML = '<div class="no-result">Aucun morceau ne correspond aux filtres.</div>';
+      return;
+    }
+    list.innerHTML =
+      '<div class="juke">' +
+        '<div class="juke-stage">' +
+          '<div class="juke-vinyl" id="juke-vinyl"><span class="juke-center" id="juke-center"></span></div>' +
+          '<div class="juke-now">' +
+            '<span class="juke-eyebrow">♪ EN ÉCOUTE</span>' +
+            '<h3 class="juke-title" id="juke-title"></h3>' +
+            '<p class="juke-meta" id="juke-meta"></p>' +
+            '<div class="juke-bar"><i id="juke-fill"></i></div>' +
+            '<div class="juke-time"><span id="juke-cur">0:00</span><span id="juke-dur">0:00</span></div>' +
+            '<div class="juke-transport">' +
+              '<button class="juke-btn" id="juke-prev" title="Précédent">⏮</button>' +
+              '<button class="juke-btn juke-main" id="juke-play" title="Lecture / pause">⏸</button>' +
+              '<button class="juke-btn" id="juke-next" title="Suivant">⏭</button>' +
+              '<button class="btn primary juke-go" id="juke-go">▶ Jouer <kbd>⏎</kbd></button>' +
+            '</div>' +
+          '</div>' +
+        '</div>' +
+        '<div class="juke-playlist" id="juke-playlist"></div>' +
+      '</div>';
+    const pl = $('juke-playlist');
+    this.view.forEach((s, i) => {
+      const best = this.scores[this.scoreKey(s)];
+      const row = document.createElement('div');
+      row.className = 'juke-row' + (s.tutorial ? ' tutorial-row' : '');
+      row.style.setProperty('--hue', s.hue);
+      const num = s.tutorial ? '📖' : s.stars + '★';
+      const fxMark = s.fx && s.fx.length ? ' <span class="sc-fx">✨</span>' : '';
+      const sub = s.tutorial ? 'Tutoriel' : (STYLE_NAMES[s.style] || s.style) + ' · ' + s.bpm + ' BPM';
+      row.innerHTML =
+        `<span class="jr-num">${num}</span>` +
+        `<span class="jr-main"><span class="jr-title">${s.title}${fxMark}</span>` +
+        `<span class="jr-sub">${sub}</span></span>` +
+        (best ? `<span class="jr-grade">${best.grade}</span>` : '') +
+        '<span class="jr-eq"><i></i><i></i><i></i></span>';
+      row.addEventListener('click', () => {
+        if (this.selected === i) { this.jukeToggle(); return; }
+        this.selected = i;
+        this.engine.uiSound(620);
+        this.updateSelection();
+      });
+      pl.appendChild(row);
+      this.cards.push(row);
+    });
+    $('juke-prev').addEventListener('click', () => this.moveSelection(-1));
+    $('juke-next').addEventListener('click', () => this.moveSelection(1));
+    $('juke-play').addEventListener('click', () => this.jukeToggle());
+    $('juke-go').addEventListener('click', () => { const s = this.view[this.selected]; if (s) this.startSong(s); });
+    this.updateSelection(true);
+  },
+
   updateSelection(instant) {
     this.cards.forEach((c, i) => c.classList.toggle('selected', i === this.selected));
     const sel = this.cards[this.selected];
     if (sel) sel.scrollIntoView({ block: 'nearest', inline: 'nearest', behavior: instant ? 'auto' : 'smooth' });
     this.renderInfo();
+    if (this.settings.menuView === 'music') this.jukeSelect(this.view[this.selected]);
+  },
+
+  /* ---------- Juke-box (écoute des morceaux dans la vue musique) ---------- */
+
+  // change le morceau écouté ; anti-rebond pour ne pas relancer l'audio à
+  // chaque cran de défilement (la platine se met à jour visuellement aussitôt)
+  jukeSelect(def) {
+    if (!def) return;
+    this.jukeDef = def;
+    this.renderJukeStage(def);
+    clearTimeout(this._jukeTimer);
+    this._jukeTimer = setTimeout(() => this.jukeStart(def), 240);
+  },
+
+  renderJukeStage(def) {
+    const v = $('juke-vinyl');
+    if (!v) return;
+    v.style.setProperty('--hue', def.hue);
+    $('juke-center').textContent = def.tutorial ? '📖' : '★' + def.stars;
+    $('juke-title').textContent = def.title;
+    $('juke-meta').textContent = def.tutorial
+      ? 'Tutoriel interactif · ' + def.sub
+      : (STYLE_NAMES[def.style] || def.style) + ' · ' + def.bpm + ' BPM · ' + def.sub;
+    $('juke-dur').textContent = this._fmtTime(this._jukeDur(def));
+    $('juke-cur').textContent = '0:00';
+    $('juke-fill').style.width = '0%';
+  },
+
+  jukeStart(def) {
+    if (this.state !== 'menu' || this.settings.menuView !== 'music' || !def) return;
+    this.engine.ensure();
+    const composed = def.tutorial ? Composer.tutorialBacking() : Composer.compose(def);
+    const last = composed.sections && composed.sections[composed.sections.length - 1];
+    const loopBeats = last ? last.end : Math.round((composed.durationSec - 1.5) / composed.spb);
+    this.engine.startSong(composed.events, composed.spb, 0.15, def.style, loopBeats);
+    this._jukeComposed = composed;
+    this._jukeLoopBeats = loopBeats;
+    this.jukeDef = def;
+    this.jukeActive = true;
+    this.jukePlaying = true;
+    this.menuMusicActive = false;
+    this._updateJukePlayBtn();
+  },
+
+  jukeToggle() {
+    if (!this.jukeActive) { this.jukeStart(this.view[this.selected]); return; }
+    this.jukePlaying = !this.jukePlaying;
+    if (this.jukePlaying) this.engine.resume(); else this.engine.pause();
+    this.engine.uiSound(560);
+    this._updateJukePlayBtn();
+  },
+
+  _updateJukePlayBtn() {
+    const b = $('juke-play');
+    if (b) b.textContent = this.jukePlaying ? '⏸' : '▶';
+    const v = $('juke-vinyl');
+    if (v) v.classList.toggle('spin', this.jukePlaying);
+    const j = document.querySelector('.juke');
+    if (j) j.classList.toggle('paused', !this.jukePlaying);
+  },
+
+  // arrête le juke-box (changement de vue, retour accueil, lancement de partie)
+  jukeStop() {
+    clearTimeout(this._jukeTimer);
+    if (this.jukeActive) this.engine.stopSong();
+    this.jukeActive = false;
+    this.jukePlaying = false;
+  },
+
+  _jukeDur(def) {
+    if (this._jukeComposed && this.jukeDef === def) return this._jukeLoopBeats * this._jukeComposed.spb;
+    const beats = def.tutorial ? 64 : (Array.isArray(def.form) ? def.form : FORMS[def.form]).length * 16;
+    return beats * 60 / def.bpm;
+  },
+
+  _fmtTime(s) {
+    s = Math.max(0, Math.round(s));
+    return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0');
+  },
+
+  // met à jour la barre de progression à chaque frame (appelé depuis startMenuBg)
+  _tickJuke() {
+    const fill = $('juke-fill');
+    if (!fill || !this.jukeActive) return;
+    const dur = this._jukeDur(this.jukeDef);
+    let t = this.engine.getSongTime();
+    if (t < 0) t = 0;
+    const pos = dur > 0 ? ((t % dur) + dur) % dur : 0;
+    fill.style.width = (dur > 0 ? pos / dur * 100 : 0).toFixed(2) + '%';
+    $('juke-cur').textContent = this._fmtTime(pos);
   },
 
   renderInfo() {
@@ -385,7 +583,7 @@ const App = {
       return;
     }
     const unlocked = this.isUnlocked(this.selected);
-    const best = this.scores[s.id];
+    const best = this.scores[this.scoreKey(s)];
     let chips;
     if (s.tutorial) {
       chips = `<span class="chip">📖 Interactif</span><span class="chip">Toutes les mécaniques</span>`;
@@ -433,6 +631,7 @@ const App = {
     const loop = () => {
       if (this.state !== 'menu') return;
       this.menuRaf = requestAnimationFrame(loop);
+      if (this.settings.menuView === 'music') this._tickJuke();
       const dpr = Math.min(window.devicePixelRatio || 1, 2);
       const w = Math.floor(innerWidth * dpr), h = Math.floor(innerHeight * dpr);
       if (c.width !== w || c.height !== h) {
@@ -449,11 +648,31 @@ const App = {
     loop();
   },
 
-  toggleView() {
-    this.settings.menuView = this.settings.menuView === 'grid' ? 'list' : 'grid';
+  VIEWS: ['list', 'grid', 'music'],
+
+  refreshViewTabs() {
+    document.querySelectorAll('#view-tabs .view-tab').forEach(tab => {
+      tab.classList.toggle('on', tab.dataset.view === this.settings.menuView);
+    });
+  },
+
+  setView(mode) {
+    if (!this.VIEWS.includes(mode) || mode === this.settings.menuView) return;
+    const wasMusic = this.settings.menuView === 'music';
+    this.settings.menuView = mode;
     this.save();
     this.engine.uiSound(680);
+    // bascule audio : entrer dans la vue musique coupe la boucle de menu
+    // (le juke-box prend le relais via buildMenu) ; en sortir la rétablit
+    if (mode === 'music') this.stopMenuMusic();
+    else if (wasMusic) { this.jukeStop(); this.playMenuMusic(); }
     this.buildMenu();
+  },
+
+  // touche G : fait défiler les affichages liste → grille → musique → …
+  cycleView() {
+    const i = this.VIEWS.indexOf(this.settings.menuView);
+    this.setView(this.VIEWS[(i + 1) % this.VIEWS.length]);
   },
 
   moveSelection(step) {
@@ -474,18 +693,21 @@ const App = {
 
   startSong(def) {
     this.engine.ensure();
+    clearTimeout(this._jukeTimer);
+    this.jukeActive = false; this.jukePlaying = false; // fin de l'écoute juke-box
     this.menuMusicActive = false; // le morceau remplace la boucle du menu
     this.engine.uiSound(760);
     if (this.game) this.game.destroy();
     $('pause-overlay').classList.add('hidden');
     $('fail-overlay').classList.add('hidden');
-    this.game = new Game(this, def);
+    this.game = new Game(this, def, { rusher: this.mode === 'rusher' });
     this.state = 'game';
     this.setScreen('game');
     this.game.start();
   },
 
   retry() {
+    if (Infini.run.active) return; // pas de retry en Infini / Roguelite
     if (!this.game) return;
     const def = this.game.def;
     this.game.destroy();
@@ -494,6 +716,8 @@ const App = {
   },
 
   quitToMenu() {
+    // en Infini / Roguelite, quitter met fin au run (et affiche le bilan)
+    if (Infini.run.active) { Infini.endRun('quit'); return; }
     if (this.game) { this.game.destroy(); this.game = null; }
     this.enterMenu();
   },
@@ -521,7 +745,8 @@ const App = {
     } else if (unranked) {
       // autopilote : partie non classée, rien n'est sauvegardé
     } else {
-      const id = result.def.id;
+      // classements séparés Solo / Rusher (même préfixe que scoreKey)
+      const id = (result.mode === 'rusher' ? 'rush::' : '') + result.def.id;
       const prev = this.scores[id];
       isRecord = !prev || result.score > prev.score;
       this.scores[id] = {
@@ -535,9 +760,10 @@ const App = {
     }
 
     const modIcons = (result.mods || []).map(id => GAME_MODS[id] ? GAME_MODS[id].icon : '').join(' ');
+    const modeTag = result.mode === 'rusher' ? '  🏁 RUSHER' : '';
     $('res-title').textContent = result.def.tutorial
       ? 'Tutoriel terminé !'
-      : `${result.def.title} — ★ ${result.def.stars}` +
+      : `${result.def.title} — ★ ${result.def.stars}` + modeTag +
         (modIcons ? `  ${modIcons}` : '') + (unranked ? ' (non classé)' : '');
     $('res-grade').textContent = result.grade;
     $('res-grade').classList.toggle('gF', result.grade === 'D');
@@ -666,6 +892,7 @@ const App = {
 
   openCalib() {
     this.stopMenuMusic(); // le métronome a besoin de silence
+    this.jukeStop();
     this.state = 'calib';
     this.setScreen('calib');
     Calib.open();
@@ -703,6 +930,21 @@ const App = {
     switch (this.state) {
       case 'title':
         if (e.code === 'Enter' || e.code === 'Space') this.launchMode('solo');
+        else if (e.code === 'KeyR') this.launchMode('rusher');
+        else if (e.code === 'KeyI') this.launchMode('infini');
+        else if (e.code === 'KeyA') this.launchMode('roguelite');
+        break;
+
+      case 'infiniChoice':
+        if (e.code === 'Digit1' || e.code === 'Numpad1') Infini.pick(0);
+        else if (e.code === 'Digit2' || e.code === 'Numpad2') Infini.pick(1);
+        else if (e.code === 'Digit3' || e.code === 'Numpad3') Infini.pick(2);
+        else if (e.code === 'Escape') Infini.endRun('quit');
+        break;
+
+      case 'infiniOver':
+        if (e.code === 'KeyR') { $('infini-over').classList.add('hidden'); Infini.again(); }
+        else if (e.code === 'Escape' || e.code === 'Enter') { $('infini-over').classList.add('hidden'); this.goHome(); }
         break;
 
       case 'menu': {
@@ -712,7 +954,8 @@ const App = {
         else if (e.code === 'ArrowUp') { e.preventDefault(); this.moveSelection(-1); }
         else if (e.code === 'ArrowRight') { e.preventDefault(); this.moveSelection(hStep); }
         else if (e.code === 'ArrowLeft') { e.preventDefault(); this.moveSelection(-hStep); }
-        else if (e.code === 'KeyG') this.toggleView();
+        else if (e.code === 'KeyG') this.cycleView();
+        else if (e.code === 'Space' && this.settings.menuView === 'music') { e.preventDefault(); this.jukeToggle(); }
         else if (e.code === 'Escape') this.goHome();
         else if (e.code === 'Enter') {
           const sel = this.view[this.selected];
